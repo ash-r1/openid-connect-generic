@@ -455,52 +455,200 @@ class OpenID_Connect_Generic_Client {
 	}
 
 	/**
-	 * Generate a new state, save it as a transient, and return the state hash.
+	 * Generate a stateless OAuth2 `state` parameter as an HMAC-signed token.
+	 *
+	 * Format: <payload_b64url>.<sig_b64url>
+	 *   payload = JSON({ v:1, n:<nonce>, r:<redirect_to>, e:<exp_unix> })
+	 *   sig     = HMAC-SHA256(payload_b64url, derive_state_key())
+	 *
+	 * No server-side storage is used. Safe for HA / multi-replica deployments
+	 * where the WordPress object cache (and thus the Transient API) is not
+	 * shared across PHP workers.
 	 *
 	 * @param string $redirect_to The redirect URL to be used after IDP authentication.
 	 *
-	 * @return string
+	 * @return string The opaque state token.
 	 */
 	public function new_state( $redirect_to ) {
-		// New state with cryptographically secure random bytes.
-		$state = bin2hex( random_bytes( 16 ) );
-		$state_value = array(
-			$state => array(
+		$key = self::derive_state_key();
+		if ( '' === $key ) {
+			// wp_salt() should always return a non-empty string; fail closed otherwise.
+			throw new RuntimeException( 'OpenID Connect: cannot derive state signing key.' );
+		}
+
+		$nonce = bin2hex( random_bytes( 16 ) );
+
+		// Backwards-compatibility: the historical filter received the transient-storage
+		// shape array($state => array('redirect_to' => ...)). It is invoked here so
+		// plugins that rely on it for side-effects (logging, analytics) keep working.
+		// Custom keys returned by the filter are no longer round-tripped to the
+		// callback handler, since transient storage has been removed; consumers that
+		// require per-flow data should use a cookie keyed off $nonce instead.
+		$legacy_state_value = array(
+			$nonce => array(
 				'redirect_to' => $redirect_to,
 			),
 		);
+		apply_filters( 'openid-connect-generic-new-state-value', $legacy_state_value, $this );
 
-		// Allow storing more data with the state. Eg. to identify user relationships.
-		$state_value = apply_filters( 'openid-connect-generic-new-state-value', $state_value, $this );
+		$payload = array(
+			'v' => 1,
+			'n' => $nonce,
+			'r' => (string) $redirect_to,
+			'e' => time() + $this->state_time_limit,
+		);
 
-		set_transient( 'openid-connect-generic-state--' . $state, $state_value, $this->state_time_limit );
+		$payload_b64 = self::base64url_encode( wp_json_encode( $payload ) );
+		$sig_b64     = self::base64url_encode( hash_hmac( 'sha256', $payload_b64, $key, true ) );
 
-		return $state;
+		return $payload_b64 . '.' . $sig_b64;
 	}
 
 	/**
-	 * Check the existence of a given state transient.
+	 * Validate an OAuth2 `state` token produced by new_state().
 	 *
-	 * @param string $state The state hash to validate.
+	 * Fires the legacy hooks for compatibility:
+	 *   - openid-connect-generic-state-not-found  on malformed / forged / signature-mismatch tokens
+	 *   - openid-connect-generic-state-expired    when the signature is valid but the `e` claim is in the past
+	 *
+	 * @param string $state The state token.
 	 *
 	 * @return bool
 	 */
 	public function check_state( $state ) {
+		$payload = self::parse_state( $state );
 
-		$state_found = true;
-
-		if ( ! get_option( '_transient_openid-connect-generic-state--' . $state ) ) {
+		if ( null === $payload ) {
 			do_action( 'openid-connect-generic-state-not-found', $state );
-			$state_found = false;
+			return false;
 		}
 
-		$valid = get_transient( 'openid-connect-generic-state--' . $state );
-
-		if ( ! $valid && $state_found ) {
+		if ( time() > intval( $payload['e'] ) ) {
 			do_action( 'openid-connect-generic-state-expired', $state );
+			return false;
 		}
 
-		return boolval( $valid );
+		return true;
+	}
+
+	/**
+	 * Return the `redirect_to` URL embedded in a previously-validated state token.
+	 *
+	 * Re-validates the signature; returns an empty string if the token is invalid
+	 * or has expired. Callers should fall back to a sensible default
+	 * (typically home_url()).
+	 *
+	 * @param string $state The state token.
+	 *
+	 * @return string
+	 */
+	public function get_state_redirect_url( $state ) {
+		$payload = self::parse_state( $state );
+		if ( null === $payload ) {
+			return '';
+		}
+		if ( time() > intval( $payload['e'] ) ) {
+			return '';
+		}
+		return isset( $payload['r'] ) ? (string) $payload['r'] : '';
+	}
+
+	/**
+	 * Decode and signature-verify a state token.
+	 *
+	 * Returns the decoded payload array on success, or null on any failure
+	 * (malformed, signature mismatch, JSON decode error, missing required claim).
+	 * The payload's `e` claim is NOT checked here; callers handle that so they
+	 * can distinguish "not-found" from "expired".
+	 *
+	 * @param string $state The state token.
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	private static function parse_state( $state ) {
+		if ( ! is_string( $state ) || '' === $state ) {
+			return null;
+		}
+		$parts = explode( '.', $state );
+		if ( count( $parts ) !== 2 ) {
+			return null;
+		}
+		list( $payload_b64, $sig_b64 ) = $parts;
+
+		$key = self::derive_state_key();
+		if ( '' === $key ) {
+			return null;
+		}
+
+		$expected_sig = hash_hmac( 'sha256', $payload_b64, $key, true );
+		$provided_sig = self::base64url_decode( $sig_b64 );
+		if ( false === $provided_sig || ! hash_equals( $expected_sig, $provided_sig ) ) {
+			return null;
+		}
+
+		$json = self::base64url_decode( $payload_b64 );
+		if ( false === $json ) {
+			return null;
+		}
+
+		$payload = json_decode( $json, true );
+		if ( ! is_array( $payload ) || ! isset( $payload['v'], $payload['n'], $payload['e'] ) ) {
+			return null;
+		}
+		if ( 1 !== intval( $payload['v'] ) ) {
+			return null;
+		}
+
+		return $payload;
+	}
+
+	/**
+	 * Derive the HMAC signing key for state tokens.
+	 *
+	 * Uses wp_salt('nonce') so the key is unique per site and rotates if the
+	 * WordPress salts are rotated. Domain-separated from other uses of the
+	 * nonce salt by an HMAC with a fixed label.
+	 *
+	 * @return string Hex-encoded 256-bit key, or '' if wp_salt() is unavailable.
+	 */
+	private static function derive_state_key() {
+		if ( ! function_exists( 'wp_salt' ) ) {
+			return '';
+		}
+		$salt = (string) wp_salt( 'nonce' );
+		if ( '' === $salt ) {
+			return '';
+		}
+		return hash_hmac( 'sha256', 'openid-connect-generic-state', $salt );
+	}
+
+	/**
+	 * URL-safe base64 encode without padding.
+	 *
+	 * @param string $data Raw data.
+	 *
+	 * @return string
+	 */
+	private static function base64url_encode( $data ) {
+		return rtrim( strtr( base64_encode( $data ), '+/', '-_' ), '=' );
+	}
+
+	/**
+	 * URL-safe base64 decode. Returns false on failure (strict mode).
+	 *
+	 * @param string $data URL-safe base64 string.
+	 *
+	 * @return string|false
+	 */
+	private static function base64url_decode( $data ) {
+		if ( ! is_string( $data ) ) {
+			return false;
+		}
+		$remainder = strlen( $data ) % 4;
+		if ( $remainder ) {
+			$data .= str_repeat( '=', 4 - $remainder );
+		}
+		return base64_decode( strtr( $data, '-_', '+/' ), true );
 	}
 
 	/**

@@ -1,3 +1,63 @@
+# Fork notice (ash-r1) #
+
+This is a private fork of [oidc-wp/openid-connect-generic](https://github.com/oidc-wp/openid-connect-generic).
+The only deviation from upstream is that the OAuth2 `state` parameter has been
+made **stateless**: it is now an HMAC-signed token signed with `wp_salt('nonce')`
+rather than a server-side WordPress transient.
+
+## Why this fork exists
+
+Upstream stores the OAuth2 `state` via the WordPress Transient API
+(`set_transient` / `get_transient`). When an external object cache (Memcached,
+Redis, APCu drop-in, ...) is enabled, transients are written to the object
+cache only and not to `wp_options`. In a multi-replica WordPress deployment
+where the object cache is **per-replica** (e.g. APCu) and the load balancer
+does not pin a browser to a single replica, the OIDC initiation and the OIDC
+callback can land on different replicas. The callback then calls
+`get_transient()` against an empty cache, fails state validation with
+`invalid-state`, and the user is bounced into a redirect loop.
+
+The stateless implementation removes the server-side write entirely. The
+`state` parameter is a self-contained, signature-verified token that can be
+validated on any replica. No object cache changes, no sticky sessions, and no
+shared Redis are required.
+
+## Upstream tracking
+
+The fork is rebased on top of upstream `main`. To pull new upstream commits:
+
+```sh
+git remote add upstream https://github.com/oidc-wp/openid-connect-generic.git
+git fetch upstream
+git rebase upstream/main
+```
+
+The patch lives entirely inside `includes/openid-connect-generic-client.php`
+(`new_state` / `check_state` / `get_state_redirect_url` plus three private
+helpers) and a one-line consumer update in
+`includes/openid-connect-generic-client-wrapper.php`. Conflicts on rebase
+should be rare.
+
+## Security notes
+
+* Signing key is derived as `hash_hmac('sha256', 'openid-connect-generic-state', wp_salt('nonce'))`,
+  so it rotates if the WordPress salts are rotated.
+* Signatures are verified with `hash_equals()` for timing-safe comparison.
+* Tokens carry an `e` (exp) claim and are rejected past expiry, separately
+  from forged-signature failures.
+* Default token lifetime is the existing `state_time_limit` (180 s).
+* Token format: `base64url(JSON({v,n,r,e})) . base64url(HMAC-SHA256(payload))`.
+  Typical length ~180 bytes — well under common provider `state` limits.
+
+## Consumer impact
+
+Plugins that hooked `openid-connect-generic-new-state-value` purely for
+side-effects (logging, audit) keep working. Plugins that relied on the filter
+to round-trip extra data through the transient to the callback handler will
+need to migrate to a cookie keyed off the state nonce.
+
+---
+
 # OpenID Connect Generic Client #
 **Contributors:** [daggerhart](https://profiles.wordpress.org/daggerhart/), [tnolte](https://profiles.wordpress.org/tnolte/)  
 **Tags:** security, login, oauth2, openidconnect, apps, authentication, autologin, sso  

@@ -45,7 +45,7 @@ Notes
   - openid-connect-generic-alter-user-data     - modify user data before a new user is created
   - openid-connect-modify-token-response-before-validation - modify the token response before validation
   - openid-connect-modify-id-token-claim-before-validation - modify the token claim before validation
-  - openid-connect-generic-new-state-value     - modify the user's state value before it us saved.
+  - openid-connect-generic-new-state-value     - DEPRECATED: invoked for BC only. Since state is now a stateless HMAC token, return values are not persisted or round-tripped to the callback handler. Use a cookie keyed off the state nonce instead.
 
   Actions
   - openid-connect-generic-user-create                     - 2 args: fires when a new user is created by this plugin
@@ -338,6 +338,10 @@ class OpenID_Connect_Generic {
 	/**
 	 * Expire state transients by attempting to access them and allowing the
 	 * transient's own mechanisms to delete any that have expired.
+	 *
+	 * Since the stateless HMAC state migration this is a no-op for new logins
+	 * (state tokens are no longer persisted). Kept to clean up any legacy
+	 * transients that may still exist from before the upgrade.
 	 *
 	 * @return void
 	 */

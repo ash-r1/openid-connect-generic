@@ -601,11 +601,10 @@ class OpenID_Connect_Generic_Client_Wrapper {
 
 		// Default redirect to the homepage.
 		$redirect_url = home_url();
-		// Redirect user according to redirect set in state.
-		$state_object = get_transient( 'openid-connect-generic-state--' . $state );
-		// Get the redirect URL stored with the corresponding authentication request state.
-		if ( ! empty( $state_object ) && ! empty( $state_object[ $state ] ) && ! empty( $state_object[ $state ]['redirect_to'] ) ) {
-			$redirect_url = $state_object[ $state ]['redirect_to'];
+		// Redirect URL is carried inside the signed state token (stateless).
+		$state_redirect = $client->get_state_redirect_url( $state );
+		if ( ! empty( $state_redirect ) ) {
+			$redirect_url = $state_redirect;
 		}
 
 		// Provide backwards compatibility for customization using the deprecated cookie method.
