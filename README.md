@@ -1,6 +1,8 @@
 # Fork notice (ash-r1) #
 
-This is a private fork of [oidc-wp/openid-connect-generic](https://github.com/oidc-wp/openid-connect-generic).
+This is a permanent fork of [oidc-wp/openid-connect-generic](https://github.com/oidc-wp/openid-connect-generic).
+Maintained at [ash-r1/openid-connect-generic](https://github.com/ash-r1/openid-connect-generic).
+
 The only deviation from upstream is that the OAuth2 `state` parameter has been
 made **stateless**: it is now an HMAC-signed token signed with `wp_salt('nonce')`
 rather than a server-side WordPress transient.
