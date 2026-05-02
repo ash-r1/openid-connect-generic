@@ -450,10 +450,7 @@ class OpenID_Connect_Generic {
 				}
 				echo '<div class="notice notice-error"><p>';
 				echo esc_html__(
-					'OpenID Connect Generic: required dependency "firebase/php-jwt" was not found. '
-					. 'If you installed this plugin from a Composer source (e.g. via VCS), '
-					. 'add `"firebase/php-jwt": "^6.10"` to your project\'s composer.json and run `composer install`. '
-					. 'If you installed from the WordPress.org zip, please reinstall — the official zip bundles required dependencies.',
+					'OpenID Connect Generic: required dependency "firebase/php-jwt" was not found. If you installed this plugin from a Composer source (e.g. via VCS), add `"firebase/php-jwt": "^6.10"` to your project\'s composer.json and run `composer install`. If you installed from the WordPress.org zip, please reinstall — the official zip bundles required dependencies.',
 					'daggerhart-openid-connect-generic'
 				);
 				echo '</p></div>';
