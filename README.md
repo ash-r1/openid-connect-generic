@@ -85,9 +85,37 @@ Please submit issues to the Github repo: https://github.com/oidc-wp/openid-conne
 
 ## Installation ##
 
+### From the WordPress.org plugin directory (recommended) ###
+
+Download from <https://wordpress.org/plugins/daggerhart-openid-connect-generic/>
+or install via the WP admin UI. The distributed zip bundles all required PHP
+dependencies — no extra steps.
+
 1. Upload to the `/wp-content/plugins/` directory
 1. Activate the plugin
 1. Visit Settings > OpenID Connect and configure to meet your needs
+
+### Via Composer / VCS (e.g. Bedrock) ###
+
+If you install this plugin from a Composer VCS source (such as this fork), the
+plugin's bundled `vendor/` directory is NOT present. Dependencies are flattened
+into the parent project's autoloader instead. Your parent project's
+`composer.json` MUST explicitly require:
+
+```json
+{
+  "require": {
+    "firebase/php-jwt": "^6.10"
+  }
+}
+```
+
+Run `composer install` in your project root to populate the parent `vendor/`
+and ensure the autoloader is wired up before WordPress loads plugins (Bedrock
+does this automatically).
+
+If `Firebase\JWT\JWT` is not available at plugin load time, the plugin will
+refuse to bootstrap and display an admin notice with instructions.
 
 ## Frequently Asked Questions ##
 
