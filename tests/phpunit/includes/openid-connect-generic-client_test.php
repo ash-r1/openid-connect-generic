@@ -293,6 +293,110 @@ class OpenID_Connect_Generic_Client_Test extends WP_UnitTestCase {
 	}
 
 	/**
+	 * State round-trip: a freshly minted state validates and surfaces redirect_to.
+	 *
+	 * @group ClientTests
+	 * @group StatelessState
+	 */
+	public function test_new_state_round_trip() {
+		$client = $this->create_client();
+		$state  = $client->new_state( 'https://example.com/wp-admin/' );
+
+		$this->assertNotEmpty( $state );
+		$this->assertSame( 1, substr_count( $state, '.' ) );
+		$this->assertTrue( $client->check_state( $state ) );
+		$this->assertEquals( 'https://example.com/wp-admin/', $client->get_state_redirect_url( $state ) );
+	}
+
+	/**
+	 * Tampering with the payload (or signature) must invalidate the state and
+	 * fire the state-not-found action so callers can log the failure.
+	 *
+	 * @group ClientTests
+	 * @group StatelessState
+	 */
+	public function test_check_state_rejects_tampered_token() {
+		$client = $this->create_client();
+		$state  = $client->new_state( 'https://example.com/wp-admin/' );
+
+		list( $payload_b64, $sig_b64 ) = explode( '.', $state );
+
+		// Flip a single character in the payload while keeping the original signature.
+		$tampered_payload = ( 'A' === $payload_b64[0] ? 'B' : 'A' ) . substr( $payload_b64, 1 );
+		$tampered         = $tampered_payload . '.' . $sig_b64;
+
+		$not_found_fired = false;
+		$listener        = function () use ( &$not_found_fired ) {
+			$not_found_fired = true;
+		};
+		add_action( 'openid-connect-generic-state-not-found', $listener );
+
+		$this->assertFalse( $client->check_state( $tampered ) );
+		$this->assertTrue( $not_found_fired, 'state-not-found action should fire for tampered tokens.' );
+
+		remove_action( 'openid-connect-generic-state-not-found', $listener );
+
+		// get_state_redirect_url must also refuse to leak the redirect target.
+		$this->assertSame( '', $client->get_state_redirect_url( $tampered ) );
+	}
+
+	/**
+	 * A state whose signature is valid but whose `e` claim is in the past must
+	 * be rejected as expired (distinct from forgery).
+	 *
+	 * @group ClientTests
+	 * @group StatelessState
+	 */
+	public function test_check_state_rejects_expired_token() {
+		// state_time_limit = -10 makes new_state() emit an already-expired token.
+		$client = $this->create_client( array( 'state_time_limit' => -10 ) );
+		$state  = $client->new_state( 'https://example.com/wp-admin/' );
+
+		$expired_fired = false;
+		$listener      = function () use ( &$expired_fired ) {
+			$expired_fired = true;
+		};
+		add_action( 'openid-connect-generic-state-expired', $listener );
+
+		$this->assertFalse( $client->check_state( $state ) );
+		$this->assertTrue( $expired_fired, 'state-expired action should fire for an expired but well-signed token.' );
+
+		remove_action( 'openid-connect-generic-state-expired', $listener );
+
+		// Expired tokens must not surface the redirect either.
+		$this->assertSame( '', $client->get_state_redirect_url( $state ) );
+	}
+
+	/**
+	 * Malformed input (empty string, missing separator, garbage) must fail
+	 * cleanly without throwing.
+	 *
+	 * @dataProvider malformed_state_provider
+	 * @group ClientTests
+	 * @group StatelessState
+	 *
+	 * @param string $bad_state The malformed state value.
+	 */
+	public function test_check_state_rejects_malformed( $bad_state ) {
+		$client = $this->create_client();
+		$this->assertFalse( $client->check_state( $bad_state ) );
+		$this->assertSame( '', $client->get_state_redirect_url( $bad_state ) );
+	}
+
+	/**
+	 * @return array<string,array{0:string}>
+	 */
+	public function malformed_state_provider() {
+		return array(
+			'empty'           => array( '' ),
+			'no_separator'    => array( 'abcdefg' ),
+			'too_many_parts'  => array( 'a.b.c' ),
+			'bad_b64_payload' => array( '!!!!.bm9wZQ' ),
+			'bad_b64_sig'     => array( 'eyJ2IjoxfQ.!!!!' ),
+		);
+	}
+
+	/**
 	 * Helper to create client instance for testing.
 	 *
 	 * @param array $settings Optional settings to override defaults.
