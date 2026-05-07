@@ -422,7 +422,47 @@ class OpenID_Connect_Generic {
 	 * @return void
 	 */
 	public static function bootstrap() {
-		require_once __DIR__ . '/vendor/autoload.php';
+		/*
+		 * Load Composer dependencies.
+		 *
+		 * This plugin can be installed in two ways:
+		 *
+		 *   1. WordPress.org-style: the distributed zip bundles `vendor/`.
+		 *      Loading `vendor/autoload.php` brings in dependencies
+		 *      (firebase/php-jwt).
+		 *
+		 *   2. Composer-managed (e.g. Bedrock, `composer require`):
+		 *      The plugin source is installed without `vendor/`. Dependencies
+		 *      are expected to be resolved into the parent project's
+		 *      autoloader instead. With `composer require
+		 *      ash-r1/daggerhart-openid-connect-generic`, Composer pulls
+		 *      `firebase/php-jwt` transitively — no extra steps. With a raw
+		 *      VCS checkout / git submodule / manual copy that bypasses
+		 *      Composer dependency resolution, the parent project must
+		 *      arrange for `firebase/php-jwt ^6.10` (or compatible) to be
+		 *      installed and for the parent `vendor/autoload.php` to be
+		 *      loaded before WordPress boots plugins, so that
+		 *      `Firebase\JWT\JWT` is autoloadable.
+		 *
+		 * If neither holds, the plugin refuses to bootstrap and shows an admin
+		 * notice explaining how to fix it. This avoids a full-site WSOD.
+		 */
+		if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+			require_once __DIR__ . '/vendor/autoload.php';
+		} elseif ( ! class_exists( '\\Firebase\\JWT\\JWT' ) ) {
+			add_action( 'admin_notices', function () {
+				if ( ! current_user_can( 'activate_plugins' ) ) {
+					return;
+				}
+				echo '<div class="notice notice-error"><p>';
+				echo esc_html__(
+					'OpenID Connect Generic: required dependency "firebase/php-jwt" was not found in any autoloader visible at plugin load. If you installed this plugin via `composer require ash-r1/daggerhart-openid-connect-generic`, run `composer install` and ensure your project\'s root `vendor/autoload.php` is loaded before WordPress boots plugins (Bedrock-style setups do this automatically). If you installed via a raw VCS checkout / manual copy that bypasses Composer, add `"firebase/php-jwt": "^6.10"` to your project\'s composer.json and run `composer install`. If you installed from the WordPress.org zip, please reinstall — the official zip bundles required dependencies.',
+					'daggerhart-openid-connect-generic'
+				);
+				echo '</p></div>';
+			} );
+			return; // bail out cleanly; do not bootstrap the plugin
+		}
 
 		$settings = new OpenID_Connect_Generic_Option_Settings(
 			// Default settings values.
